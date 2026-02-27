@@ -1,65 +1,59 @@
 <#
 .SYNOPSIS
-    Init-GitHubRepo automates the complete setup of a Git repository from local 
-    initialization to GitHub publication.
+    Init-GitHubRepo automates the complete setup of a Git repository from local initialization to GitHub publication.
 
 .DESCRIPTION
-    This script embodies a comprehensive, self-contained approach to repository creation. 
-    Rather than merely initializing a local Git repository, it orchestrates the entire 
-    lifecycle: establishing local version control, configuring developer identity, 
-    creating structured initial commits and version tags, generating release 
-    documentation, and optionally creating the remote repository on GitHub through 
+    This script embodies a comprehensive, self-contained approach to repository creation. Rather than
+    merely initializing a local Git repository, it orchestrates the entire lifecycle: establishing local
+    version control, configuring developer identity, creating structured initial commits and version tags,
+    generating release documentation, and optionally creating the remote repository on GitHub through
     authenticated API calls.
 
-    The script operates with sensible defaults that respect your existing Git 
-    configuration while allowing complete override through parameters. It creates 
-    professional-grade repository structure with proper semantic versioning tags, release 
-    notes, and clear next-step instructions. When GitHub integration is requested, it 
-    handles authentication token management securely and creates either public or private 
+    The script operates with sensible defaults that respect your existing Git configuration while allowing
+    complete override through parameters. It creates professional-grade repository structure with proper
+    semantic versioning tags, release notes, and clear next-step instructions. When GitHub integration is
+    requested, it handles authentication token management securely and creates either public or private
     repositories according to your specification.
 
-    The implementation maintains compatibility across Windows PowerShell 5.1 and 
-    PowerShell Core 6/7+, gracefully handling platform differences in credential storage 
-    and API invocation. All operations are idempotent where possible, allowing repeated 
-    execution without destructive side effects.
+    The implementation maintains compatibility across Windows PowerShell 5.1 and PowerShell Core 6/7+,
+    gracefully handling platform differences in credential storage and API invocation. All operations
+    are idempotent where possible, allowing repeated execution without destructive side effects.
 
-    By default, the script sets repository-specific Git identity (user.name and 
-    user.email) locally, preserving your global Git configuration for other projects. 
-    This supports maintaining different personas across personal, professional, and 
-    open-source contexts.
+    By default, the script sets repository-specific Git identity (user.name and user.email) locally,
+    preserving your global Git configuration for other projects. This supports maintaining different
+    personas across personal, professional, and open-source contexts.
 
 .EXAMPLE
     Init-GitHubRepo -GithubUser "jdoe" -GithubRepo "my-project"
     
-    Basic usage with local-only initialization. Creates the repository structure and 
-    prepares it for manual GitHub connection via the displayed instructions.
+    Basic usage with local-only initialization. Creates the repository structure and prepares it for
+    manual GitHub connection via the displayed instructions.
 
 .EXAMPLE
     Init-GitHubRepo -GithubUser "acme-corp" -GithubRepo "internal-tool" `
                     -DevName "Jane Developer" -DevEmail "jane@acme.com" `
                     -PackVersion "1.0.0" -CreateRemote -Private
     
-    Full specification for a corporate project. Creates a private repository on GitHub 
-    under the organization account, with specific developer identity and initial version 
-    1.0.0.
+    Full specification for a corporate project. Creates a private repository on GitHub under the
+    organization account, with specific developer identity and initial version 1.0.0.
 
 .EXAMPLE
     Init-GitHubRepo -GithubUser "opensourcehero" -GithubRepo "public-good" `
                     -CreateRemote -Token (Read-Host -AsSecureString "GitHub Token")
     
-    Creates a public repository on GitHub using a securely entered token, demonstrating 
-    safe credential handling practices.
+    Creates a public repository on GitHub using a securely entered token, demonstrating safe
+    credential handling practices.
 
 .NOTES
-    All user-facing messages and logs are emitted in English to maintain consistency 
-    across international environments and facilitate troubleshooting in heterogeneous 
-    teams. Internal documentation and comments follow the same convention, ensuring the 
-    codebase remains accessible to contributors regardless of their locale.
+    All user-facing messages and logs are emitted in English to maintain consistency across
+    international environments and facilitate troubleshooting in heterogeneous teams. Internal
+    documentation and comments follow the same convention, ensuring the codebase remains
+    accessible to contributors regardless of their locale.
 
     File Name      : Init-GitHubRepo.ps1
     Author         : Yorga Babuscan (yorgabr@gmail.com)
-    Prerequisites  : Git must be installed and available; PowerShell 5.1 or higher
-    Version        : 1.2.0
+    Prerequisite   : PowerShell 5.1 or higher
+    Version        : 1.2.1
     License        : GPL-3.0
 #>
 [CmdletBinding()]
@@ -100,27 +94,25 @@ param(
     [Parameter(Mandatory=$false, HelpMessage="Enable detailed step logging")]
     [switch]$VerboseOutput,
 
+    [Parameter(Mandatory=$false, HelpMessage="Force recreation of tag if it exists")]
+    [switch]$ForceTag,
+
     [Parameter(Mandatory=$false, HelpMessage="Show script version")]
     [switch]$Version,
 
     [Parameter(Mandatory=$false, HelpMessage="Show detailed help")]
-    [switch]$Help,
-
-    [Parameter(Mandatory=$false, HelpMessage="Install argument completion")]
-    [ValidateSet("TEMP", "USER", "SYSTEM")]
-    [string]$GenerateCompletion
+    [switch]$Help
 )
 
-# Version detection and compatibility setup
+# Version detection and strict mode
 $script:IsWindowsPowerShell = $PSVersionTable.PSEdition -eq 'Desktop' -or $PSVersionTable.PSVersion.Major -le 5
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-#__________ Script metadata and state _____________________________________________________________
-$SCRIPT_VERSION = "1.2.0"
+$SCRIPT_VERSION = "1.2.1"
 
-# Script-scoped state variables
+#__________ Script metadata and state _____________________________________________________________
 $script:GITHUB_USER = ""
 $script:GITHUB_REPO = ""
 $script:DEFAULT_GIT_NAME = ""
@@ -134,7 +126,6 @@ $script:REMOTE_CREATED = $false
 $script:REMOTE_URL = ""
 
 #__________ Color helpers for rich console output _________________________________________________
-# PowerShell 5.1 compatibility: use [char]27 instead of `e
 $ESC = [char]27
 $Cyan   = "${ESC}[36m"
 $Yellow = "${ESC}[33m"
@@ -156,9 +147,7 @@ function Out-Warn {
 
 function Out-Success { 
     param([string]$Message) 
-    if ($script:VERBOSE) { 
-        [Console]::Out.WriteLine("$Green[SUCCESS]$Reset $Message") 
-    } 
+    [Console]::Out.WriteLine("$Green[SUCCESS]$Reset $Message") 
 }
 
 function Out-Error { 
@@ -171,11 +160,6 @@ function Get-GitConfig {
     <#
     .SYNOPSIS
         Retrieves a value from Git configuration.
-    
-    .DESCRIPTION
-        Queries the Git configuration system for a specific key. Returns empty string
-        if the key is not set or if Git is not available. This function operates
-        defensively, ensuring that missing Git configurations do not halt execution.
     #>
     param([string]$Key)
     try {
@@ -195,27 +179,15 @@ $script:DEFAULT_GIT_EMAIL = Get-GitConfig "user.email"
 
 #__________ Utility functions _____________________________________________________________________
 function Get-ScriptName {
-    <#
-    .SYNOPSIS
-        Returns the name of the currently executing script.
-    #>
     return Split-Path -Leaf $PSCommandPath
 }
 
 function Show-Version {
-    <#
-    .SYNOPSIS
-        Displays the script version.
-    #>
     $name = Get-ScriptName
     [Console]::Out.WriteLine("$name version $SCRIPT_VERSION")
 }
 
 function Show-Usage {
-    <#
-    .SYNOPSIS
-        Displays comprehensive usage help.
-    #>
     @"
 Init-GitHubRepo.ps1 — Initialize a Git repository with proper tagging and release structure.
 
@@ -227,25 +199,25 @@ Required Arguments:
     -GithubRepo NAME          Repository name.
 
 Options:
-    -Version                  Show script semantic version and exit.
-    -Help, -h, -?             Show this help and exit.
-    -DevName NAME             Developer's full name (default: -GithubUser value,
-                              or git config user.name if set).
-    -DevEmail EMAIL           Developer's e-mail (default: git config user.email
-                              if set, otherwise empty).
-    -PackVersion SEMVER       Package version for tag (default: 0.1.0).
-    -CreateRemote             Create the repository on GitHub via API.
-    -Private                  Make the GitHub repository private (default: public).
-    -Token TOKEN              GitHub personal access token (required for -CreateRemote).
-                              Accepts SecureString or plain text (SecureString recommended).
-    -ApiBaseUrl URL           GitHub Enterprise API URL (default: https://api.github.com).
-    -SetLocalGitConfig        Set user.name and user.email in local git config
-                              for this repository only (default: true).
-    -NoSetLocalGitConfig      Disable setting local git config (use global).
-    -VerboseOutput            Echo each step.
+    -Version                   Show script semantic version and exit.
+    -Help                      Show this help and exit.
+    -DevName NAME              Developer's full name (default: -GithubUser value,
+                               or git config user.name if set).
+    -DevEmail EMAIL            Developer's e-mail (default: git config user.email
+                               if set, otherwise empty).
+    -PackVersion SEMVER        Package version for tag (default: 0.1.0).
+    -CreateRemote              Create the repository on GitHub via API.
+    -Private                   Make the GitHub repository private (default: public).
+    -Token TOKEN               GitHub personal access token (required for -CreateRemote).
+    -ApiBaseUrl URL            GitHub Enterprise API URL (default: https://api.github.com).
+    -SetLocalGitConfig         Set user.name and user.email in local git config
+                               for this repository only (default: true).
+    -NoSetLocalGitConfig       Disable setting local git config (use global).
+    -VerboseOutput             Echo each step.
+    -ForceTag                  Delete and recreate tag if it already exists.
     -GenerateCompletion SCOPE
-                              Generate and install PowerShell argument completer.
-                              SCOPE can be: TEMP, USER, or SYSTEM.
+                               Generate and install PowerShell argument completer.
+                               SCOPE can be: TEMP, USER, or SYSTEM.
 
 Examples:
     # Basic local initialization
@@ -254,13 +226,8 @@ Examples:
     # Create public repository on GitHub
     Init-GitHubRepo.ps1 -GithubUser john -GithubRepo myproject -CreateRemote -Token "`$token"
 
-    # Create private repository with full specification
-    Init-GitHubRepo.ps1 -GithubUser acme-corp -GithubRepo internal-tool `
-        -DevName "Jane Doe" -DevEmail "jane@acme.com" `
-        -PackVersion 1.0.0 -CreateRemote -Private -Token "`$token"
-
-    # Generate and install autocomplete for current user
-    Init-GitHubRepo.ps1 -GenerateCompletion USER
+    # Force update existing tag
+    Init-GitHubRepo.ps1 -GithubUser john -GithubRepo myproject -PackVersion 1.0.0 -ForceTag
 
 Author: Yorga Babuscan (yorgabr@gmail.com)
 "@
@@ -271,30 +238,13 @@ function Initialize-Arguments {
     <#
     .SYNOPSIS
         Processes and validates all script arguments.
-    
-    .DESCRIPTION
-        This function orchestrates the configuration phase, handling special flags like -Version
-        and -Help first, then validating that required parameters are present. It establishes
-        sensible defaults for developer identity by interrogating Git configuration and falling
-        back to the GitHub username when necessary.
-        
-        When GitHub repository creation is requested, it validates that authentication
-        credentials are provided and converts SecureString tokens to plain text for API
-        usage while minimizing exposure time.
     #>
-    # Handle completion generation first (standalone operation)
-    if ($GenerateCompletion) {
-        Install-Completion -Scope $GenerateCompletion
-        exit 0
-    }
-
-    # Handle version display
+    # Handle version and help
     if ($Version) {
         Show-Version
         exit 0
     }
 
-    # Handle help display
     if ($Help) {
         Show-Usage
         exit 0
@@ -380,160 +330,11 @@ function Initialize-Arguments {
     }
 }
 
-#__________ PowerShell completion infrastructure _________________________________________________
-function Get-CompletionScript {
-    <#
-    .SYNOPSIS
-        Generates the PowerShell argument completer script block.
-    #>
-    @'
-# Init-GitHubRepo.ps1 argument completer
-# Generated automatically - do not edit manually
-
-$initRepoParams = @(
-    'GithubUser'
-    'GithubRepo'
-    'DevName'
-    'DevEmail'
-    'PackVersion'
-    'CreateRemote'
-    'Private'
-    'Token'
-    'ApiBaseUrl'
-    'SetLocalGitConfig'
-    'NoSetLocalGitConfig'
-    'VerboseOutput'
-    'Version'
-    'Help'
-    'GenerateCompletion'
-)
-
-$generateCompletionValues = @('TEMP', 'USER', 'SYSTEM')
-
-$script:initRepoCompleter = {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    switch ($parameterName) {
-        'GenerateCompletion' {
-            return $generateCompletionValues | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-                [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-            }
-        }
-        default {
-            return $null
-        }
-    }
-}
-
-Register-ArgumentCompleter -CommandName Init-GitHubRepo.ps1 -ParameterName GenerateCompletion -ScriptBlock $script:initRepoCompleter
-'@
-}
-
-function Install-Completion {
-    <#
-    .SYNOPSIS
-        Installs PowerShell argument completion.
-    
-    .DESCRIPTION
-        Configures tab completion for this script's parameters. The TEMP scope is useful for
-        trying out the completion or in automation scenarios. USER scope modifies your personal
-        PowerShell profile for persistence across sessions. SYSTEM scope requires administrator
-        rights and makes completion available to all users.
-    #>
-    param([string]$Scope)
-
-    switch ($Scope) {
-        'TEMP' {
-            Out-Info "Installing PowerShell completion for current session (TEMP)..."
-            Invoke-Expression (Get-CompletionScript)
-            Out-Success "PowerShell completion activated for current session."
-        }
-        'USER' {
-            Out-Info "Installing PowerShell completion for user (USER)..."
-            
-            $profileDir = Split-Path -Parent $PROFILE
-            if (-not (Test-Path -LiteralPath $profileDir)) {
-                Out-Info "Creating directory: $profileDir"
-                $null = New-Item -ItemType Directory -Path $profileDir -Force
-            }
-
-            $completionScript = Get-CompletionScript
-            $completionBlock = "`n# Init-GitHubRepo.ps1 completion`n$completionScript`n"
-            
-            if (Test-Path -LiteralPath $PROFILE) {
-                Add-Content -Path $PROFILE -Value $completionBlock
-            } else {
-                Set-Content -Path $PROFILE -Value $completionBlock
-            }
-            
-            Out-Success "PowerShell completion installed to profile: $PROFILE"
-            Out-Info "To activate immediately, run: . `$PROFILE"
-            Out-Info "Or restart your PowerShell session."
-        }
-        'SYSTEM' {
-            Out-Info "Installing PowerShell completion system-wide (SYSTEM)..."
-            
-            # Determine if we have administrator privileges (PowerShell 5.1 compatible)
-            $isAdmin = $false
-            try {
-                $currentPrincipal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-                $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            } catch {
-                # Non-Windows or error in detection
-                $isAdmin = $false
-            }
-
-            if (-not $isAdmin) {
-                Out-Error "System-wide installation requires administrator privileges."
-                Out-Info "Please run PowerShell as Administrator."
-                exit 1
-            }
-
-            # Determine the all-users profile location (PowerShell 5.1 compatible)
-            if ($PSVersionTable.PSEdition -eq 'Core') {
-                if ($IsWindows -or -not (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue)) {
-                    $allUsersProfile = "$env:ProgramFiles\PowerShell\7\profile.ps1"
-                } else {
-                    $allUsersProfile = "/usr/local/share/powershell/profile.ps1"
-                }
-            } else {
-                $allUsersProfile = "$env:WINDIR\System32\WindowsPowerShell\v1.0\profile.ps1"
-            }
-
-            $completionScript = Get-CompletionScript
-            $completionBlock = "`n# Init-GitHubRepo.ps1 completion`n$completionScript`n"
-            
-            $profileDir = Split-Path -Parent $allUsersProfile
-            if (-not (Test-Path -LiteralPath $profileDir)) {
-                $null = New-Item -ItemType Directory -Path $profileDir -Force
-            }
-
-            if (Test-Path -LiteralPath $allUsersProfile) {
-                Add-Content -Path $allUsersProfile -Value $completionBlock
-            } else {
-                Set-Content -Path $allUsersProfile -Value $completionBlock
-            }
-            
-            Out-Success "PowerShell completion installed to: $allUsersProfile"
-            Out-Info "All users will have completion available in new PowerShell sessions."
-        }
-    }
-}
-
 #__________ GitHub API integration ________________________________________________________________
 function New-GitHubRepository {
     <#
     .SYNOPSIS
         Creates a new repository on GitHub using the REST API.
-    
-    .DESCRIPTION
-        This function encapsulates the GitHub repository creation logic, handling both public
-        and private repositories. It constructs the appropriate API payload, manages authentication
-        via Bearer token, and interprets response codes to provide meaningful feedback.
-        
-        The function respects the ApiBaseUrl parameter to support GitHub Enterprise installations,
-        defaulting to the public GitHub API endpoint. Upon successful creation, it extracts the
-        repository's clone URL and HTML URL for subsequent use.
     #>
     param(
         [string]$Owner,
@@ -543,7 +344,6 @@ function New-GitHubRepository {
         [string]$ApiUrl = "https://api.github.com"
     )
 
-    # PowerShell 5.1 compatible conditional string construction
     $visibility = "public"
     if ($IsPrivate) {
         $visibility = "private"
@@ -559,14 +359,13 @@ function New-GitHubRepository {
             $uri = "$ApiUrl/orgs/$Owner/repos"
         }
     } catch {
-        # If user check fails, assume personal repo
         Out-Warn "Could not verify user context, attempting personal repository creation"
     }
 
     $body = @{
         name = $Name
         private = $IsPrivate
-        auto_init = $false  # We'll push our own initialization
+        auto_init = $false
         description = "Repository created by Init-GitHubRepo.ps1"
     } | ConvertTo-Json
 
@@ -610,12 +409,6 @@ function Initialize-GitRepository {
     <#
     .SYNOPSIS
         Creates and configures the local Git repository.
-    
-    .DESCRIPTION
-        Initializes a new Git repository if one doesn't exist, establishing the main branch
-        (with fallback to master for compatibility). When local configuration is enabled,
-        it sets repository-specific user identity, supporting multiple personas across
-        different projects without polluting global Git configuration.
     #>
     if (-not (Test-Path -LiteralPath ".git")) {
         Out-Info "Initializing git repository..."
@@ -710,7 +503,8 @@ Initial commit: $($script:GITHUB_REPO)
     
     $commitOutput = git commit -m "$commitMessage" 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Out-Warn "Nothing to commit or commit failed."
+        Out-Warn "Nothing to commit or commit failed (working tree clean or no changes)."
+        Out-Info "This is normal if all files are already committed."
     } else {
         Out-Success "Initial commit created."
     }
@@ -721,7 +515,26 @@ function New-VersionTag {
     .SYNOPSIS
         Creates an annotated Git tag for the initial version.
     #>
+    param([switch]$Force)
+    
     Out-Info "Creating tag v$($script:PACK_VERSION)..."
+    
+    # Check if tag already exists
+    $tagExists = git tag -l "v$($script:PACK_VERSION)" 2>$null
+    if ($tagExists) {
+        if ($Force) {
+            Out-Warn "Tag v$($script:PACK_VERSION) already exists. Deleting..."
+            git tag -d "v$($script:PACK_VERSION)" 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Out-Error "Failed to delete existing tag."
+                return
+            }
+            Out-Info "Existing tag deleted. Recreating..."
+        } else {
+            Out-Warn "Tag v$($script:PACK_VERSION) already exists. Use -ForceTag to recreate."
+            return
+        }
+    }
     
     $tagMessage = @"
 Release v$($script:PACK_VERSION)
@@ -739,7 +552,7 @@ Initial release of $($script:GITHUB_REPO).
     if ($LASTEXITCODE -eq 0) {
         Out-Success "Tag v$($script:PACK_VERSION) created."
     } else {
-        Out-Warn "Tag v$($script:PACK_VERSION) may already exist."
+        Out-Warn "Failed to create tag v$($script:PACK_VERSION)."
     }
 }
 
@@ -781,11 +594,6 @@ function Add-GitRemote {
     <#
     .SYNOPSIS
         Configures the Git remote and pushes initial content.
-    
-    .DESCRIPTION
-        Adds the GitHub repository as the 'origin' remote and pushes both the main branch
-        and the version tag. If the repository was created via API, it uses the provided
-        clone URL; otherwise, constructs the standard HTTPS URL for manual setup.
     #>
     param([string]$RemoteUrl)
 
@@ -895,7 +703,7 @@ function Invoke-Main {
     # Execute initialization phases
     Initialize-GitRepository
     New-InitialCommit
-    New-VersionTag
+    New-VersionTag -Force:$ForceTag
     New-ReleaseNotes
     
     # GitHub remote creation and push
