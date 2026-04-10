@@ -1,27 +1,34 @@
-<#
+﻿<#
 .SYNOPSIS
-    Init-GitHubRepo automates the complete setup of a Git repository from local initialization to GitHub publication.
+Init-GitHubRepo automates the complete setup of a Git repository from local 
+initialization to GitHub publication.
 
 .DESCRIPTION
-    This script embodies a comprehensive, self-contained approach to repository creation. Rather than
-    merely initializing a local Git repository, it orchestrates the entire lifecycle: establishing local
-    version control, configuring developer identity, creating structured initial commits and version tags,
-    generating release documentation, and optionally creating the remote repository on GitHub through
-    authenticated API calls.
+This script embodies a comprehensive, self-contained approach to repository creation. 
+Rather than merely initializing a local Git repository, it orchestrates the entire 
+lifecycle: establishing local version control, configuring developer identity, 
+creating structured initial commits and version tags, generating release 
+documentation, and optionally creating the remote repository on GitHub through 
+authenticated API calls.
 
-    The implementation maintains compatibility across Windows PowerShell 5.1 and PowerShell Core 6/7+,
-    gracefully handling platform differences in credential storage and API invocation. All operations
-    are idempotent where possible, allowing repeated execution without destructive side effects.
+The implementation maintains compatibility across Windows PowerShell 5.1 and 
+PowerShell Core 6/7+, gracefully handling platform differences in credential storage 
+and API invocation. All operations are idempotent where possible, allowing repeated 
+execution without destructive side effects.
 
 .EXAMPLE
-    Init-GitHubRepo -GithubUser "jdoe" -GithubRepo "my-project" -CreateRemote -Token (Read-Host -AsSecureString "Token")
+Init-GitHubRepo `
+    -GithubUser "jdoe" `
+    -GithubRepo "my-project" `
+    -CreateRemote `
+    -Token (Read-Host -AsSecureString "Token")
 
 .NOTES
-    File Name      : Init-GitHubRepo.ps1
-    Author         : Yorga Babuscan (yorgabr@gmail.com)
-    Prerequisite   : PowerShell 5.1 or higher
-    Version        : 1.2.1
-    License        : GPL-3.0
+File Name      : Init-GitHubRepo.ps1
+Author         : Yorga Babuscan (yorgabr@gmail.com)
+Prerequisite   : PowerShell 5.1 or higher
+Version        : 1.2.1
+License        : GPL-3.0
 #>
 [CmdletBinding()]
 param(
