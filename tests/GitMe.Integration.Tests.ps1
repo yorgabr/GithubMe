@@ -103,7 +103,7 @@ Describe "GitMe - End-to-End Integration Tests" {
     Context "Full Workflow Using Locally Emulated Infrastructure" {
         BeforeEach {
             # Create isolated subfolders for this specific scenario
-            $ContextId = [Path]::GetRandomFileName()
+            $ContextId = [System.IO.Path]::GetRandomFileName()
             $LocalRepoPath = Join-Path $global:IntegrationTestRoot "local-$ContextId"
             $RemoteRepoPath = Join-Path $global:IntegrationTestRoot "remotes"
             
