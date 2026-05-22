@@ -39,13 +39,15 @@ BeforeAll {
                 }
                 elseif ($Path -match "/user/repos$" -and $Method -eq "POST") {
                     $Response.StatusCode = 201
-                    $ResponseBody = '{"clone_url": "http://localhost:8989/remotes/github-repo.git", "html_url": "http://github.com/gitme-integration-user/github-repo"}'
+                    $TargetBare = (Join-Path $global:IntegrationTestRoot "remotes\github-repo.git").Replace("\", "/")
+                    $ResponseBody = '{"clone_url": "' + $TargetBare + '", "html_url": "http://github.com/gitme-integration-user/github-repo"}'
                 }
                 
                 # Gitlab emulation
                 elseif ($Path -match "/api/v4/projects$" -and $Method -eq "POST") {
                     $Response.StatusCode = 201
-                    $ResponseBody = '{"http_url_to_repo": "http://localhost:8989/remotes/gitlab-repo.git", "web_url": "http://gitlab.com/gitme-integration-user/gitlab-repo"}'
+                    $TargetBare = (Join-Path $global:IntegrationTestRoot "remotes\gitlab-repo.git").Replace("\", "/")
+                    $ResponseBody = '{"http_url_to_repo": "' + $TargetBare + '", "web_url": "http://gitlab.com/gitme-integration-user/gitlab-repo"}'
                 }
 
                 # Write the HTTP response
