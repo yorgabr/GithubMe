@@ -1,0 +1,23 @@
+﻿{
+    "version": "{{VERSION}}",
+    "description": "Professional Git repository initializer with remote publishing support.",
+    "homepage": "https://github.com/yorgabr/GitMe",
+    "license": "GPL-3.0",
+    "url": "https://github.com/yorgabr/GitMe/releases/download/v{{VERSION}}/GitMe.{{VERSION}}.zip",
+    "hash": "PLACEHOLDER",
+    "extract_dir": "GitMe",
+    "installer": {
+        "script": [
+            "$moduleDir = Join-Path $env:USERPROFILE 'Documents\\WindowsPowerShell\\Modules\\GitMe\\{{VERSION}}'",
+            "New-Item -ItemType Directory -Path $moduleDir -Force | Out-Null",
+            "Copy-Item -Path \"$dir\\*\" -Destination $moduleDir -Recurse -Force",
+            "Write-Host 'GitMe installed. Import with: Import-Module GitMe'"
+        ]
+    },
+    "checkver": {
+        "github": "https://github.com/yorgabr/GitMe"
+    },
+    "autoupdate": {
+        "url": "https://github.com/yorgabr/GitMe/releases/download/v$version/GitMe.$version.zip"
+    }
+}

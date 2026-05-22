@@ -1,0 +1,28 @@
+﻿# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.9.0.schema.json
+PackageIdentifier: YorgaBabuscan.GitMe
+PackageVersion: {{VERSION}}
+PackageLocale: en-US
+Publisher: Yorga Babuscan
+PublisherUrl: https://github.com/yorgabr
+PackageName: GitMe
+PackageUrl: https://github.com/yorgabr/GitMe
+License: GPL-3.0
+LicenseUrl: https://github.com/yorgabr/GitMe/blob/main/docs/LICENSE.md
+ShortDescription: Professional Git repository initializer with remote publishing support.
+Tags:
+  - git
+  - github
+  - gitlab
+  - devops
+  - powershell
+InstallerType: zip
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/yorgabr/GitMe/releases/download/v{{VERSION}}/GitMe.{{VERSION}}.zip
+    InstallerSha256: PLACEHOLDER
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: GitMe.psd1
+        PortableCommandAlias: gitme
+ManifestType: singleton
+ManifestVersion: 1.9.0
