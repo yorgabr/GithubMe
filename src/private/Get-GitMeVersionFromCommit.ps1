@@ -5,17 +5,19 @@
 
         [scriptblock]$GitInvoker = {
             param(
-                [Parameter(ValueFromRemainingArguments = $true)]
+                [Parameter(Mandatory = $false)]
                 [string[]]$Arguments
             )
-            Invoke-GitMeNative @Arguments
+            Invoke-GitMeNative -Arguments $Arguments
         }
     )
 
     #---
     # Get latest tag
     #---
-    $latestTagResult = & $GitInvoker 'describe' '--tags' '--abbrev=0'
+    $describeArgs = @('describe', '--tags', '--abbrev=0')
+    $latestTagResult = & $GitInvoker $describeArgs
+
     $latestTag = $latestTagResult.Output
 
     $range = if ($latestTag) { "$latestTag..HEAD" } else { 'HEAD' }
@@ -23,7 +25,8 @@
     #---
     # Get commit log
     #---
-    $log = & $GitInvoker 'log' $range '--pretty=format:%B'
+    $logArgs = @('log', $range, '--pretty=format:%B')
+    $log = & $GitInvoker $logArgs
 
     if ($log.ExitCode -ne 0 -or -not $log.Output) {
         return $CurrentVersion

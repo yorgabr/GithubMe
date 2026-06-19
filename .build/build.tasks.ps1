@@ -24,12 +24,14 @@ task Clean {
 }
 
 # --- Format ------------------------------------------------------------------
+# Formats only .ps1 and .psm1 files (NOT .psd1) using the full formatting ruleset.
+# Formatting .psd1 files triggers a known PSScriptAnalyzer bug with nested hashtables.
 task Format {
-    $files = Get-ChildItem -Path "$SrcRoot\*.ps1", "$SrcRoot\*\*.ps1" -Recurse
+    $settings = Join-Path $PSScriptRoot 'pssa-settings.psd1'
+    $files = Get-ChildItem -Path $SrcRoot -Include '*.ps1', '*.psm1' -Recurse
     foreach ($file in $files) {
         $content   = Get-Content -Raw -Path $file.FullName
-        $formatted = Invoke-Formatter -ScriptDefinition $content `
-                         -Settings (Join-Path $PSScriptRoot 'pssa-settings.psd1')
+        $formatted = Invoke-Formatter -ScriptDefinition $content -Settings $settings
         if ($formatted -ne $content) {
             Set-Content -Path $file.FullName -Value $formatted -Encoding UTF8 -NoNewline
             Write-Build Yellow "Formatted $($file.Name)"
@@ -38,10 +40,32 @@ task Format {
 }
 
 # --- Lint / Static Analysis --------------------------------------------------
+# Uses a lint-only settings file (no formatting rules) and targets only .ps1/.psm1
+# files explicitly, avoiding the PSScriptAnalyzer enumeration bug on .psd1 files.
 task Analyze {
-    $settings = Join-Path $PSScriptRoot 'pssa-settings.psd1'
-    $results  = Invoke-ScriptAnalyzer -Path $SrcRoot -Recurse -Settings $settings `
-                    -Severity @('Error', 'Warning')
+    $settings = Join-Path $PSScriptRoot 'pssa-lint.psd1'
+
+    # Collect .ps1 and .psm1 files explicitly instead of passing the directory,
+    # so PSScriptAnalyzer never attempts to parse .psd1 manifest files.
+    $files = Get-ChildItem -Path $SrcRoot -Include '*.ps1', '*.psm1' -Recurse |
+        Select-Object -ExpandProperty FullName
+
+    if (-not $files) {
+        Write-Build Green "No PowerShell script files found to analyze."
+        return
+    }
+
+    $results = @()
+    foreach ($file in $files) {
+        $fileResults = Invoke-ScriptAnalyzer `
+            -Path $file `
+            -Settings $settings `
+            -Severity @('Error', 'Warning')
+        if ($fileResults) {
+            $results += $fileResults
+        }
+    }
+
     if ($results) {
         $results | Format-Table -AutoSize
         throw "PSScriptAnalyzer found $($results.Count) issues."
@@ -53,8 +77,25 @@ task Analyze {
 task Security {
     $secRules = Get-ScriptAnalyzerRule |
         Where-Object { $_.RuleName -match 'Credential|Password|SecureString|Injection|Unsafe|Shell' }
-    $secResults = Invoke-ScriptAnalyzer -Path $SrcRoot -Recurse `
-                      -IncludeRule $secRules.RuleName
+
+    $files = Get-ChildItem -Path $SrcRoot -Include '*.ps1', '*.psm1' -Recurse |
+        Select-Object -ExpandProperty FullName
+
+    if (-not $files) {
+        Write-Build Green "No PowerShell script files found for security scan."
+        return
+    }
+
+    $secResults = @()
+    foreach ($file in $files) {
+        $fileResults = Invoke-ScriptAnalyzer `
+            -Path $file `
+            -IncludeRule $secRules.RuleName
+        if ($fileResults) {
+            $secResults += $fileResults
+        }
+    }
+
     if ($secResults) {
         $secResults | Format-Table -AutoSize
         throw "Security scan found $($secResults.Count) issues."
@@ -65,15 +106,15 @@ task Security {
 # --- Test --------------------------------------------------------------------
 task Test {
     $config = New-PesterConfiguration
-    $config.Run.Path                        = $TestsRoot
-    $config.CodeCoverage.Enabled            = $true
-    $config.CodeCoverage.Path               = "$SrcRoot\*.ps1", "$SrcRoot\*\*.ps1"
-    $config.CodeCoverage.OutputFormat       = 'JaCoCo'
-    $config.CodeCoverage.OutputPath         = "$OutRoot\coverage.xml"
-    $config.CodeCoverage.CoveragePercentTarget = 100
-    $config.TestResult.Enabled              = $true
-    $config.TestResult.OutputPath           = "$OutRoot\test-results.xml"
-    $config.Output.Verbosity                = 'Detailed'
+    $config.Run.Path                           = $TestsRoot
+    $config.CodeCoverage.Enabled               = $true
+    $config.CodeCoverage.Path                  = "$SrcRoot\*.ps1", "$SrcRoot\*\*.ps1"
+    $config.CodeCoverage.OutputFormat          = 'JaCoCo'
+    $config.CodeCoverage.OutputPath            = "$OutRoot\coverage.xml"
+    $config.CodeCoverage.CoveragePercentTarget = 80
+    $config.TestResult.Enabled                 = $true
+    $config.TestResult.OutputPath              = "$OutRoot\test-results.xml"
+    $config.Output.Verbosity                   = 'Detailed'
 
     $result = Invoke-Pester -Configuration $config
 
@@ -82,21 +123,17 @@ task Test {
     }
 
     # ── Parse JaCoCo XML for coverage percentage ──────────────────────────
-    # The <report> element contains several <counter type="…"> children.
-    # Casting $cov.report.counter directly to [int] fails because it is an
-    # array.  We must filter by type first, then read the scalar attributes.
     [xml]$cov = Get-Content "$OutRoot\coverage.xml"
 
-    # Select the top-level INSTRUCTION counter (most meaningful for line parity)
-    $counter  = $cov.report.counter | Where-Object { $_.type -eq 'INSTRUCTION' }
-    $covered  = [int]$counter.covered
-    $missed   = [int]$counter.missed
-    $total    = $covered + $missed
+    $counter = $cov.report.counter | Where-Object { $_.type -eq 'INSTRUCTION' }
+    $covered = [int]$counter.covered
+    $missed  = [int]$counter.missed
+    $total   = $covered + $missed
 
     $pct = if ($total -gt 0) { [math]::Round(($covered / $total) * 100, 2) } else { 100 }
     Write-Build Cyan "Code coverage: $pct % ($covered / $total instructions)"
 
-    $minimumCoverage = 45
+    $minimumCoverage = 80
     if ($pct -lt $minimumCoverage) {
         throw "Coverage $pct % is below the required $minimumCoverage %."
     }
@@ -114,10 +151,13 @@ task Build {
         -replace "ModuleVersion\s*=\s*'[^']+'", "ModuleVersion = '$($script:ModuleVersion)'" |
         Set-Content $manifestPath -Encoding UTF8
 
-    # Generate SHA-256 checksum manifest to protect installed code
+    # Generate SHA-256 checksum manifest
     $hashes = Get-ChildItem $moduleOut -Recurse -File |
         Get-FileHash -Algorithm SHA256 |
-        Select-Object Hash, @{ N = 'Path'; E = { $_.Path.Replace($moduleOut, '.').TrimStart('\') } }
+        Select-Object Hash, @{
+            N = 'Path'
+            E = { $_.Path.Replace($moduleOut, '.').TrimStart('\') }
+        }
     $hashes | ConvertTo-Json | Set-Content (Join-Path $OutRoot 'checksums.json') -Encoding UTF8
 
     Write-Build Green "Built module version $($script:ModuleVersion)"

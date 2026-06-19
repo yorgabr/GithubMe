@@ -20,10 +20,12 @@
 
         $uri = "$apiUrl/user/repos"
         try {
-            $me = Invoke-RestMethod -Uri "$apiUrl/user" -Headers @{Authorization = "Bearer $Token" } -ErrorAction Stop
+            $me = Invoke-RestMethod -Uri "$apiUrl/user" -Headers @{ Authorization = "Bearer $Token" } -ErrorAction Stop
             if ($Owner -ne $me.login) { $uri = "$apiUrl/orgs/$Owner/repos" }
         }
-        catch { Write-GitMeLog -Level Warn -Message 'Could not verify GitHub identity; assuming personal account.' }
+        catch {
+            Write-GitMeLog -Level Warn -Message "Could not verify GitHub identity; assuming personal account. ($_)"
+        }
 
         $headers = @{
             Authorization  = "Bearer $Token"
@@ -47,19 +49,7 @@
             }
         }
         catch {
-            # Hybrid status code parsing for cross-compatibility between PS 5.1 and PS 7+.
-            # PS 5.1 places the response on $_.Exception.Response while PS 7+ uses $_.Response.
-            # We also guard against the property not existing at all (e.g., connection refused).
-            $code = 0
-            try {
-                if ($null -ne $_.Exception -and $null -ne $_.Exception.Response) {
-                    $code = [int]$_.Exception.Response.StatusCode
-                }
-            }
-            catch {
-                # Property does not exist; leave $code as 0
-            }
-
+            $code = Get-HttpStatusCode -ErrorRecord $_
             $detail = switch ($code) {
                 422 { "Repository '$Name' already exists or name is invalid." }
                 401 { "Authentication failed — verify the token has 'repo' scope." }
@@ -96,17 +86,7 @@
             }
         }
         catch {
-            # Hybrid status code parsing — same defensive approach as GitHub block above
-            $code = 0
-            try {
-                if ($null -ne $_.Exception -and $null -ne $_.Exception.Response) {
-                    $code = [int]$_.Exception.Response.StatusCode
-                }
-            }
-            catch {
-                # Property does not exist; leave $code as 0
-            }
-
+            $code = Get-HttpStatusCode -ErrorRecord $_
             $detail = switch ($code) {
                 400 { "Project '$Name' already exists or path is invalid." }
                 401 { "Authentication failed — verify your GitLab personal access token." }
