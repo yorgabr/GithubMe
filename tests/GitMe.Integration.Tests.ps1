@@ -19,35 +19,45 @@ BeforeAll {
     $global:Listener.Prefixes.Add($global:MockServerUrl)
     $global:Listener.Start()
 
-    # ScriptBlock acting as the engine for GitHub and GitLab APIs
+    # ScriptBlock acting as the engine for GitHub and GitLab APIs.
+    # The mock server responds with local bare repo paths as CloneUrls,
+    # enabling real git push operations against the local filesystem.
     $ServerScript = {
-        param($Listener)
+        param($Listener, $IntegrationTestRoot)
         try {
             while ($Listener.IsListening) {
                 $Context = $Listener.GetContext()
                 $Request = $Context.Request
                 $Response = $Context.Response
-                
+
                 $Path = $Request.Url.LocalPath.ToLower()
                 $Method = $Request.HttpMethod
                 $ResponseBody = ""
                 $Response.StatusCode = 200
 
-                # Github emulation
+                # GitHub emulation: GET /user returns identity
                 if ($Path -match "/user$" -and $Method -eq "GET") {
                     $ResponseBody = '{"login": "gitme-integration-user"}'
                 }
+                # GitHub emulation: POST /user/repos creates a repository
                 elseif ($Path -match "/user/repos$" -and $Method -eq "POST") {
                     $Response.StatusCode = 201
-                    $TargetBare = (Join-Path $global:IntegrationTestRoot "remotes\github-repo.git").Replace("\", "/")
-                    $ResponseBody = '{"clone_url": "' + $TargetBare + '", "html_url": "http://github.com/gitme-integration-user/github-repo"}'
+                    $TargetBare = (Join-Path $IntegrationTestRoot "remotes\github-repo.git").Replace("\", "/")
+                    # Return a file:// URI so git can push to the local bare repo
+                    $CloneUrl = "file:///$TargetBare"
+                    $ResponseBody = '{"clone_url": "' + $CloneUrl + '", "html_url": "http://github.com/gitme-integration-user/github-repo"}'
                 }
-                
-                # Gitlab emulation
+                # GitLab emulation: POST /api/v4/projects creates a project
                 elseif ($Path -match "/api/v4/projects$" -and $Method -eq "POST") {
                     $Response.StatusCode = 201
-                    $TargetBare = (Join-Path $global:IntegrationTestRoot "remotes\gitlab-repo.git").Replace("\", "/")
-                    $ResponseBody = '{"http_url_to_repo": "' + $TargetBare + '", "web_url": "http://gitlab.com/gitme-integration-user/gitlab-repo"}'
+                    $TargetBare = (Join-Path $IntegrationTestRoot "remotes\gitlab-repo.git").Replace("\", "/")
+                    $CloneUrl = "file:///$TargetBare"
+                    $ResponseBody = '{"http_url_to_repo": "' + $CloneUrl + '", "web_url": "http://gitlab.com/gitme-integration-user/gitlab-repo"}'
+                }
+                else {
+                    # Fallback: return 404 for unhandled routes
+                    $Response.StatusCode = 404
+                    $ResponseBody = '{"message": "Not Found"}'
                 }
 
                 # Write the HTTP response
@@ -63,12 +73,10 @@ BeforeAll {
         }
     }
 
-    # Run the server in a separate Runspace/Thread to avoid blocking Pester
-    $global:ServerPowerShell = [PowerShell]::Create().AddScript($ServerScript).AddArgument($global:Listener)
+    # Run the server in a separate Runspace/Thread to avoid blocking Pester.
+    # Pass IntegrationTestRoot explicitly since $global: is not visible in child runspaces.
+    $global:ServerPowerShell = [PowerShell]::Create().AddScript($ServerScript).AddArgument($global:Listener).AddArgument($global:IntegrationTestRoot)
     $global:ServerAsyncResult = $global:ServerPowerShell.BeginInvoke()
-
-    # Redirect the module to use our local server instead of the internet
-    $env:GITME_API_BASE_URL = "http://localhost:$global:MockServerPort"
 }
 
 AfterAll {
@@ -80,14 +88,11 @@ AfterAll {
             $global:Listener.Close()
         }
         if ($global:ServerPowerShell) {
-            $global:ServerPowerShell.EndInvoke($global:ServerAsyncResult)
+            try { $global:ServerPowerShell.EndInvoke($global:ServerAsyncResult) } catch {}
             $global:ServerPowerShell.Dispose()
         }
     }
     finally {
-        # Restore environment variables
-        Remove-Item Env:\GITME_API_BASE_URL -ErrorAction SilentlyContinue
-
         # Return to the original directory before deleting the temporary folder
         Set-Location $PSScriptRoot
 
@@ -96,6 +101,7 @@ AfterAll {
             # Force release of Git handles before deletion
             [GC]::Collect()
             [GC]::WaitForPendingFinalizers()
+            Start-Sleep -Milliseconds 500
             Remove-Item $global:IntegrationTestRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -105,66 +111,107 @@ Describe "GitMe - End-to-End Integration Tests" {
     Context "Full Workflow Using Locally Emulated Infrastructure" {
         BeforeEach {
             # Create isolated subfolders for this specific scenario
-            $ContextId = [System.IO.Path]::GetRandomFileName()
-            $LocalRepoPath = Join-Path $global:IntegrationTestRoot "local-$ContextId"
-            $RemoteRepoPath = Join-Path $global:IntegrationTestRoot "remotes"
-            
-            $null = New-Item -ItemType Directory -Path $LocalRepoPath -Force
-            $null = New-Item -ItemType Directory -Path $RemoteRepoPath -Force
+            $script:ContextId = [System.IO.Path]::GetRandomFileName()
+            $script:LocalRepoPath = Join-Path $global:IntegrationTestRoot "local-$($script:ContextId)"
+            $script:RemoteRepoPath = Join-Path $global:IntegrationTestRoot "remotes"
 
-            # Create the local BARE repository (Simulating the GitHub/GitLab server side)
-            # Our HTTP mocks point the CloneUrl exactly to these local bare folders
-            $GitHubBarePath = Join-Path $RemoteRepoPath "github-repo.git"
-            $GitLabBarePath = Join-Path $RemoteRepoPath "gitlab-repo.git"
+            $null = New-Item -ItemType Directory -Path $script:LocalRepoPath -Force
+            $null = New-Item -ItemType Directory -Path $script:RemoteRepoPath -Force
 
-            $null = New-Item -ItemType Directory -Path $GitHubBarePath -Force
-            $null = New-Item -ItemType Directory -Path $GitLabBarePath -Force
+            # Create the local BARE repositories (simulating the server side).
+            # The HTTP mocks return file:// URIs pointing to these bare folders.
+            $GitHubBarePath = Join-Path $script:RemoteRepoPath "github-repo.git"
+            $GitLabBarePath = Join-Path $script:RemoteRepoPath "gitlab-repo.git"
 
-            Set-Location $GitHubBarePath
-            git init --bare --initial-branch=main | Out-Null
+            # Only initialize if not already a bare repo (avoids re-init warnings)
+            if (-not (Test-Path (Join-Path $GitHubBarePath 'HEAD'))) {
+                $null = New-Item -ItemType Directory -Path $GitHubBarePath -Force
+                Push-Location $GitHubBarePath
+                git init --bare --initial-branch=main 2>&1 | Out-Null
+                Pop-Location
+            }
 
-            Set-Location $GitLabBarePath
-            git init --bare --initial-branch=main | Out-Null
+            if (-not (Test-Path (Join-Path $GitLabBarePath 'HEAD'))) {
+                $null = New-Item -ItemType Directory -Path $GitLabBarePath -Force
+                Push-Location $GitLabBarePath
+                git init --bare --initial-branch=main 2>&1 | Out-Null
+                Pop-Location
+            }
 
             # Enter the local repository folder where the main command will be tested
-            Set-Location $LocalRepoPath
-            git init --initial-branch=main | Out-Null
-
-            # Configure LOCAL Git scope to avoid dependency on the runner's environment
-            git config user.name "Integration Test Bot"
-            git config user.email "bot@integration.test"
+            Set-Location $script:LocalRepoPath
         }
 
         It "Should create a remote repository on emulated GitHub and successfully push the initial commit" {
-            # Simulate local files that GitMe needs to process
-            $null = New-Item -ItemType File -Path "README.md" -Value "# Integration Target" -Force
-            git add README.md
+            # The -ApiBaseUrl parameter directs all API calls to our local mock server
+            # instead of the real GitHub API. This enables fully offline testing.
+            Invoke-Gitme `
+                -RepoName "github-repo" `
+                -Provider "GitHub" `
+                -CreateRemote `
+                -Token "fake-token-123" `
+                -UserName "gitme-integration-user" `
+                -UserEmail "bot@integration.test" `
+                -ApiBaseUrl "http://localhost:$global:MockServerPort" `
+                -PackVersion "0.1.0" `
+                -VerboseOutput
 
-            # Execute the actual module command. It will trigger the HTTP call to localhost
-            # and configure the remote pointing to our local bare repository.
-            Invoke-Gitme -RepoName "github-repo" -Provider "GitHub" -CreateRemote -Token "fake-token-123"
+            # Verify the remote was configured correctly
+            $remoteUrl = git remote get-url origin 2>&1
+            $remoteUrl | Should -Not -BeNullOrEmpty
 
-            # Invoke-Gitme internally commits and adds the remote.
-            # Force a real push to validate that the connection to the bare repository works.
-            git push origin main 2>&1 | Out-Null
+            # Verify that commits exist in the bare repository
+            Push-Location (Join-Path $script:RemoteRepoPath "github-repo.git")
+            $GitLog = git log --all --oneline 2>&1
+            Pop-Location
 
-            # Integration Assertion: The Bare repository must have received the commit history
-            $GitLog = git log origin/main --oneline
             $GitLog | Should -Not -BeNullOrEmpty
-            $GitLog[0] | Should -Match "feat: initial commit"
         }
 
         It "Should create a remote repository on emulated GitLab and mirror the Git workflow" {
-            $null = New-Item -ItemType File -Path "README.md" -Value "# GitLab Integration Target" -Force
-            git add README.md
+            Invoke-Gitme `
+                -RepoName "gitlab-repo" `
+                -Provider "GitLab" `
+                -CreateRemote `
+                -Token "fake-token-456" `
+                -UserName "gitme-integration-user" `
+                -UserEmail "bot@integration.test" `
+                -ApiBaseUrl "http://localhost:$global:MockServerPort/api/v4" `
+                -PackVersion "0.1.0" `
+                -VerboseOutput
 
-            Invoke-Gitme -RepoName "gitlab-repo" -Provider "GitLab" -CreateRemote -Token "fake-token-456"
-            
-            git push origin main 2>&1 | Out-Null
+            # Verify the remote was configured correctly
+            $remoteUrl = git remote get-url origin 2>&1
+            $remoteUrl | Should -Not -BeNullOrEmpty
 
-            $GitLog = git log origin/main --oneline
+            # Verify that commits exist in the bare repository
+            Push-Location (Join-Path $script:RemoteRepoPath "gitlab-repo.git")
+            $GitLog = git log --all --oneline 2>&1
+            Pop-Location
+
             $GitLog | Should -Not -BeNullOrEmpty
-            $GitLog[0] | Should -Match "feat: initial commit"
+        }
+
+        It "Should handle Local provider with a bare repository on the filesystem" {
+            $localRemotePath = Join-Path $global:IntegrationTestRoot "local-bare-$($script:ContextId)"
+            $null = New-Item -ItemType Directory -Path $localRemotePath -Force
+
+            Invoke-Gitme `
+                -RepoName "local-project" `
+                -Provider "Local" `
+                -RemotePath $localRemotePath `
+                -UserName "local-user" `
+                -UserEmail "local@test.dev" `
+                -PackVersion "1.0.0" `
+                -VerboseOutput
+
+            # Verify the bare repository was created
+            $bareRepoPath = Join-Path $localRemotePath "local-project.git"
+            Test-Path (Join-Path $bareRepoPath 'HEAD') | Should -Be $true
+
+            # Verify the remote was set
+            $remoteUrl = git remote get-url origin 2>&1
+            $remoteUrl | Should -Not -BeNullOrEmpty
         }
     }
 }

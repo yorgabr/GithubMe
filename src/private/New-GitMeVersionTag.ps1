@@ -27,7 +27,7 @@
         }
     }
 
-            $author = if ($DevEmail) { "$DevName <$DevEmail>" } else { $DevName }
+    $author = if ($DevEmail) { "$DevName <$DevEmail>" } else { $DevName }
     $tagMessage = "Release v$PackVersion`n`nInitial release of $RepoName.`nAuthor: $author"
 
     $tag = Invoke-GitMeNative @('tag', '-a', "v$PackVersion", '-m', $tagMessage)
@@ -35,6 +35,7 @@
         Write-GitMeLog -Level Success -Message "Tag v$PackVersion created."
     }
     else {
+        # Non-fatal: tag creation can fail if there are no commits yet
         Write-GitMeLog -Level Warn -Message "Failed to create tag v$PackVersion."
     }
 }

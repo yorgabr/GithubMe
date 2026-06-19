@@ -38,7 +38,7 @@ function Invoke-Gitme {
         [switch]$AutoBump
     )
 
-    # Meta flags
+    # Meta flags — these exit early without performing any repository operations
     if ($Version) {
         "GitMe version $script:GitMeVersion"
         return
@@ -86,7 +86,7 @@ Examples:
         return
     }
 
-    # Resolve path
+    # Resolve path — create directory if it does not exist
     $target = Resolve-Path $Path -ErrorAction SilentlyContinue
     if (-not $target) {
         $target = (New-Item -ItemType Directory -Path $Path -Force).FullName
@@ -99,15 +99,21 @@ Examples:
         # Prerequisites
         Test-GitMePrerequisite
 
-        # Identity fallback
+        # Identity fallback chain: explicit param > git config > environment
         $defaultName = Get-GitMeConfig 'user.name'
         $defaultEmail = Get-GitMeConfig 'user.email'
-        $devName = if ($UserName) { $UserName }  elseif ($defaultName) { $defaultName }  else { $env:USERNAME }
+        $devName = if ($UserName) { $UserName } elseif ($defaultName) { $defaultName } else { $env:USERNAME }
         $devEmail = if ($UserEmail) { $UserEmail } elseif ($defaultEmail) { $defaultEmail } else { '' }
 
-        # Version resolution
-        $currentTag = (Invoke-GitMeNative @('describe', '--tags', '--abbrev=0')).Output
-        $currentTag = if ($currentTag) { $currentTag -replace '^v', '' } else { '0.1.0' }
+        # Version resolution — attempt to read from existing tags first
+        $describeResult = Invoke-GitMeNative @('describe', '--tags', '--abbrev=0')
+        $currentTag = if ($describeResult.ExitCode -eq 0 -and $describeResult.Output) {
+            # Strip the 'v' prefix if present (e.g., "v1.2.3" -> "1.2.3")
+            ($describeResult.Output -replace '^v', '').Trim()
+        }
+        else {
+            '0.1.0'
+        }
 
         if ($AutoBump) {
             $PackVersion = Get-GitMeVersionFromCommit -CurrentVersion $currentTag
@@ -117,11 +123,11 @@ Examples:
             $PackVersion = $currentTag
         }
 
-        # ShouldProcess guard
+        # ShouldProcess guard — provides -WhatIf and -Confirm support
         $operation = "Initialise Git repository '$RepoName' at $target with remote $Provider"
         if (-not $PSCmdlet.ShouldProcess($target, $operation)) { return }
 
-        # Local setup via Splatting
+        # Local setup via splatting
         $repoParams = @{
             DevName        = $devName
             DevEmail       = $devEmail
@@ -147,7 +153,7 @@ Examples:
         }
         New-GitMeVersionTag @tagParams
 
-        # Remote creation
+        # Remote creation — triggered by -CreateRemote or implicitly for Local provider
         $remoteInfo = $null
         if ($CreateRemote -or $Provider -eq 'Local') {
             switch ($Provider) {
@@ -159,8 +165,9 @@ Examples:
                         Name       = $RepoName
                         Token      = $Token
                         IsPrivate  = $Private.IsPresent
-                        ApiBaseUrl = $ApiBaseUrl
                     }
+                    # Only pass ApiBaseUrl if explicitly provided to avoid overriding defaults
+                    if ($ApiBaseUrl) { $remoteParams['ApiBaseUrl'] = $ApiBaseUrl }
                     $remoteInfo = New-RemoteRepository @remoteParams
                 }
                 'GitLab' {
@@ -171,8 +178,8 @@ Examples:
                         Name       = $RepoName
                         Token      = $Token
                         IsPrivate  = $Private.IsPresent
-                        ApiBaseUrl = $ApiBaseUrl
                     }
+                    if ($ApiBaseUrl) { $remoteParams['ApiBaseUrl'] = $ApiBaseUrl }
                     $remoteInfo = New-RemoteRepository @remoteParams
                 }
                 'Local' {
@@ -186,7 +193,7 @@ Examples:
             }
         }
 
-        # Push or manual instructions
+        # Push or display manual instructions
         if ($remoteInfo) {
             Add-GitMeRemote -RemoteUrl $remoteInfo.CloneUrl -PackVersion $PackVersion
             Write-GitMeLog -Level Success -Message '=== Repository is live ==='

@@ -13,7 +13,9 @@
     if ($add.ExitCode -ne 0) { throw 'git add failed' }
 
     $author = if ($DevEmail) { "$DevName <$DevEmail>" } else { $DevName }
-    $message = "Initial commit: $RepoName`n`n- Project structure set up`n- Version $PackVersion`n- Author: $author"
+    # Use Conventional Commits format for the initial commit message.
+    # This ensures compatibility with automatic version bumping tools.
+    $message = "feat: initial commit`n`n- Project: $RepoName`n- Version: $PackVersion`n- Author: $author"
 
     Write-GitMeLog -Level Info -Message 'Creating initial commit...'
     $commit = Invoke-GitMeNative @('commit', '-m', $message)

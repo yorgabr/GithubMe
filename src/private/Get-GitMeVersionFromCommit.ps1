@@ -1,28 +1,42 @@
 ﻿function Get-GitMeVersionFromCommit {
-    <#
-    .SYNOPSIS
-        Determines the next SemVer version based on Conventional Commits since the latest tag.
-    .DESCRIPTION
-        Reads git log since the most recent tag. If a BREAKING CHANGE, ! after type, or
-        'BREAKING CHANGE:' footer is found, bumps MAJOR. If 'feat:' found, bumps MINOR.
-        If 'fix:' found, bumps PATCH. Otherwise returns the current tag or 0.1.0.
-    #>
     [CmdletBinding()]
-    param([string]$CurrentVersion = '0.1.0')
+    param(
+        [string]$CurrentVersion = '0.1.0',
 
-    $latestTag = (Invoke-GitMeNative @('describe', '--tags', '--abbrev=0')).Output
+        [scriptblock]$GitInvoker = {
+            param(
+                [Parameter(ValueFromRemainingArguments = $true)]
+                [string[]]$Arguments
+            )
+            Invoke-GitMeNative @Arguments
+        }
+    )
+
+    #---
+    # Get latest tag
+    #---
+    $latestTagResult = & $GitInvoker 'describe' '--tags' '--abbrev=0'
+    $latestTag = $latestTagResult.Output
+
     $range = if ($latestTag) { "$latestTag..HEAD" } else { 'HEAD' }
 
-    # Use %B to include commit bodies and footers where breaking changes are specified
-    $log = Invoke-GitMeNative @('log', $range, '--pretty=format:%B')
-    if ($log.ExitCode -ne 0 -or -not $log.Output) { return $CurrentVersion }
+    #---
+    # Get commit log
+    #---
+    $log = & $GitInvoker 'log' $range '--pretty=format:%B'
 
-    $commits = $log.Output
+    if ($log.ExitCode -ne 0 -or -not $log.Output) {
+        return $CurrentVersion
+    }
+
+    #---
+    # Analyze commits
+    #---
     $hasBreaking = $false
     $hasFeature = $false
     $hasFix = $false
 
-    foreach ($line in $commits) {
+    foreach ($line in $log.Output) {
         if ($line -match '^[a-z]+(\(.+\))?!:') { $hasBreaking = $true }
         if ($line -match 'BREAKING CHANGE') { $hasBreaking = $true }
         if ($line -match '^feat(\(.+\))?:') { $hasFeature = $true }

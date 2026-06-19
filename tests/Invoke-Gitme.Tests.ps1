@@ -2,6 +2,12 @@ BeforeAll {
     # Import the module explicitly before running tests
     $ModulePath = Join-Path $PSScriptRoot "..\src\GitMe.psd1"
     Import-Module $ModulePath -Force
+
+    # Pester 5.x requires commands to be discoverable before mocking.
+    # Private functions are not exported by the module manifest, so we must
+    # dot-source them into the test session to make them mockable.
+    $PrivateRoot = Join-Path $PSScriptRoot "..\src\private"
+    Get-ChildItem -Path "$PrivateRoot\*.ps1" | ForEach-Object { . $_.FullName }
 }
 
 Describe "Invoke-Gitme" {
@@ -11,14 +17,15 @@ Describe "Invoke-Gitme" {
             Mock Test-GitMePrerequisite {}
             Mock Get-GitMeConfig { return "mocked-user" } -ParameterFilter { $Key -eq "user.name" }
             Mock Get-GitMeConfig { return "mocked@email.com" } -ParameterFilter { $Key -eq "user.email" }
-            Mock Invoke-GitMeNative { 
-                return [pscustomobject]@{ Output = "v0.1.0"; ExitCode = 0 } 
+            Mock Invoke-GitMeNative {
+                return [pscustomobject]@{ Output = "v0.1.0"; ExitCode = 0 }
             } -ParameterFilter { $Arguments -contains "describe" }
 
             Mock Initialize-GitMeRepository {}
             Mock New-GitMeInitialCommit {}
             Mock New-GitMeVersionTag {}
             Mock Show-GitMeInstruction {}
+            Mock Write-GitMeLog {}
             Mock Push-Location {}
             Mock Pop-Location {}
         }
@@ -47,14 +54,18 @@ Describe "Invoke-Gitme" {
             Mock Initialize-GitMeRepository {}
             Mock New-GitMeInitialCommit {}
             Mock New-GitMeVersionTag {}
-            Mock New-GitMeReleaseNote {}
             Mock Add-GitMeRemote {}
+            Mock Write-GitMeLog {}
             Mock Push-Location {}
             Mock Pop-Location {}
-            
+
             # Mock the API calling function to return a clean PSCustomObject
             Mock New-RemoteRepository {
-                return [pscustomobject]@{ CloneUrl = "https://github.com/mock/repo.git"; HtmlUrl = "https://github.com/mock/repo"; Provider = "GitHub" }
+                return [pscustomobject]@{
+                    CloneUrl = "https://github.com/mock/repo.git"
+                    HtmlUrl  = "https://github.com/mock/repo"
+                    Provider = "GitHub"
+                }
             }
         }
 
