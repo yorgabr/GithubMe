@@ -9,18 +9,32 @@ $tls13 = [Net.SecurityProtocolType] | Get-Member -Static -MemberType Property |
     Where-Object { $_.Name -eq 'Tls13' }
 if ($tls13) {
     [Net.ServicePointManager]::SecurityProtocol =
-        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13
+    [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13
 }
 
 $script:GitMeVersion = '1.0.0'
 $script:GitMeLogLevel = 'Info'
 
-# Load helpers in deterministic alphabetical order
-$scripts = Get-ChildItem -Path "$PSScriptRoot\*.ps1" -Recurse | Sort-Object FullName
+# ── Load private helpers first, then public functions ────────────────────────
+# We load each folder explicitly and in the correct dependency order.
+# The previous approach used Get-ChildItem -Recurse from the module root, which
+# caused PowerShell to re-process #Requires directives in public .ps1 files and
+# trigger a second module-load attempt, breaking Pester's InModuleScope contract.
+foreach ($folder in @('private', 'public')) {
+    $folderPath = Join-Path $PSScriptRoot $folder
+    if (-not (Test-Path $folderPath)) { continue }
 
-foreach ($file in $scripts) {
-    try { . $file.FullName }
-    catch { throw "Failed to import $($file.FullName): $_" }
+    $files = Get-ChildItem -Path $folderPath -Filter '*.ps1' -File |
+        Sort-Object Name
+
+    foreach ($file in $files) {
+        try {
+            . $file.FullName
+        }
+        catch {
+            throw "Failed to import $($file.FullName): $_"
+        }
+    }
 }
 
 # Register tab completion once at module load
