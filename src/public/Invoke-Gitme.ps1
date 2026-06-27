@@ -12,6 +12,9 @@
 
 .EXAMPLE
     Invoke-Gitme -Provider Local -RemotePath '\\nas\git' -RepoName myproject -Force
+
+.EXAMPLE
+    Invoke-Gitme -RepoName myproject -Verbose
 #>
 function Invoke-Gitme {
     [CmdletBinding(SupportsShouldProcess = $true)]
@@ -75,6 +78,7 @@ Versioning:
 Config:
   -NoLocalConfig         Do not write local git user.name / user.email
   -VerboseOutput         Print INFO and SUCCESS messages
+  -Verbose               Print DEBUG messages in addition to all other levels
   -Version               Show version and exit
   -Help                  Show this help and exit
 
@@ -82,6 +86,7 @@ Examples:
   gitme -RepoName myproject -Provider GitHub -CreateRemote -Token "tok"
   gitme -RepoName myproject -Provider GitLab -CreateRemote -Token "tok"
   gitme -RepoName myproject -Provider Local -RemotePath '\\server\share'
+  gitme -RepoName myproject -Verbose
 "@
         return
     }
@@ -94,33 +99,64 @@ Examples:
     Push-Location $target
 
     try {
-        $script:GitMeLogLevel = if ($VerboseOutput) { 'Info' } else { 'Quiet' }
+        # ── Log-level resolution ──────────────────────────────────────────────
+        # -Verbose (standard PS switch) activates Debug level, which is a
+        # superset of Info.  -VerboseOutput activates Info level only.
+        # Neither switch leaves the level at Quiet.
+        if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey('Verbose') -and
+            $PSCmdlet.MyInvocation.BoundParameters['Verbose'] -eq $true) {
+            $script:GitMeLogLevel = 'Debug'
+        }
+        elseif ($VerboseOutput) {
+            $script:GitMeLogLevel = 'Info'
+        }
+        else {
+            $script:GitMeLogLevel = 'Quiet'
+        }
+
+        Write-GitMeLog -Level Debug -Message "GitMe $script:GitMeVersion starting."
+        Write-GitMeLog -Level Debug -Message "Resolved target path: $target"
+        Write-GitMeLog -Level Debug -Message "Parameters: RepoName='$RepoName' Provider='$Provider' CreateRemote=$CreateRemote AutoBump=$AutoBump Force=$Force"
 
         # Prerequisites
         Test-GitMePrerequisite
 
         # Identity fallback chain: explicit param > git config > environment
-        $defaultName = Get-GitMeConfig 'user.name'
+        $defaultName  = Get-GitMeConfig 'user.name'
         $defaultEmail = Get-GitMeConfig 'user.email'
-        $devName = if ($UserName) { $UserName } elseif ($defaultName) { $defaultName } else { $env:USERNAME }
+
+        Write-GitMeLog -Level Debug -Message "Git global user.name='$defaultName' user.email='$defaultEmail'"
+
+        $devName  = if ($UserName)  { $UserName }  elseif ($defaultName)  { $defaultName }  else { $env:USERNAME }
         $devEmail = if ($UserEmail) { $UserEmail } elseif ($defaultEmail) { $defaultEmail } else { '' }
+
+        Write-GitMeLog -Level Debug -Message "Resolved identity: name='$devName' email='$devEmail'"
 
         # Version resolution — attempt to read from existing tags first
         $describeResult = Invoke-GitMeNative @('describe', '--tags', '--abbrev=0')
+
+        Write-GitMeLog -Level Debug -Message "git describe exit=$($describeResult.ExitCode) output='$($describeResult.Output)'"
+
         $currentTag = if ($describeResult.ExitCode -eq 0 -and $describeResult.Output) {
-            # Strip the 'v' prefix if present (e.g., "v1.2.3" -> "1.2.3")
             ($describeResult.Output -replace '^v', '').Trim()
         }
         else {
             '0.1.0'
         }
 
+        Write-GitMeLog -Level Debug -Message "Current tag resolved to: '$currentTag'"
+
         if ($AutoBump) {
             $PackVersion = Get-GitMeVersionFromCommit -CurrentVersion $currentTag
-            Write-GitMeLog -Level Info -Message "Auto-bumped version: $PackVersion"
+            Write-GitMeLog -Level Info  -Message "Auto-bumped version: $PackVersion"
+            Write-GitMeLog -Level Debug -Message "Version before bump: '$currentTag' — after: '$PackVersion'"
         }
         elseif (-not $PackVersion) {
             $PackVersion = $currentTag
+            Write-GitMeLog -Level Debug -Message "PackVersion not supplied — using current tag: '$PackVersion'"
+        }
+        else {
+            Write-GitMeLog -Level Debug -Message "PackVersion supplied explicitly: '$PackVersion'"
         }
 
         # ShouldProcess guard — provides -WhatIf and -Confirm support
@@ -134,6 +170,9 @@ Examples:
             SetLocalConfig = (-not $NoLocalConfig.IsPresent)
             Force          = $Force
         }
+
+        Write-GitMeLog -Level Debug -Message "Calling Initialize-GitMeRepository with SetLocalConfig=$($repoParams.SetLocalConfig)"
+
         Initialize-GitMeRepository @repoParams
 
         $commitParams = @{
@@ -142,6 +181,9 @@ Examples:
             DevName     = $devName
             DevEmail    = $devEmail
         }
+
+        Write-GitMeLog -Level Debug -Message "Calling New-GitMeInitialCommit for '$RepoName' v$PackVersion"
+
         New-GitMeInitialCommit @commitParams
 
         $tagParams = @{
@@ -151,35 +193,45 @@ Examples:
             DevEmail    = $devEmail
             Force       = $Force
         }
+
+        Write-GitMeLog -Level Debug -Message "Calling New-GitMeVersionTag for v$PackVersion"
+
         New-GitMeVersionTag @tagParams
 
         # Remote creation — triggered by -CreateRemote or implicitly for Local provider
         $remoteInfo = $null
         if ($CreateRemote -or $Provider -eq 'Local') {
+            Write-GitMeLog -Level Debug -Message "Remote creation requested — Provider='$Provider'"
+
             switch ($Provider) {
                 'GitHub' {
                     if (-not $Token) { throw '-Token is required for GitHub remote creation.' }
                     $remoteParams = @{
-                        Provider   = 'GitHub'
-                        Owner      = $devName
-                        Name       = $RepoName
-                        Token      = $Token
-                        IsPrivate  = $Private.IsPresent
+                        Provider  = 'GitHub'
+                        Owner     = $devName
+                        Name      = $RepoName
+                        Token     = $Token
+                        IsPrivate = $Private.IsPresent
                     }
-                    # Only pass ApiBaseUrl if explicitly provided to avoid overriding defaults
-                    if ($ApiBaseUrl) { $remoteParams['ApiBaseUrl'] = $ApiBaseUrl }
+                    if ($ApiBaseUrl) {
+                        $remoteParams['ApiBaseUrl'] = $ApiBaseUrl
+                        Write-GitMeLog -Level Debug -Message "GitHub ApiBaseUrl override: '$ApiBaseUrl'"
+                    }
                     $remoteInfo = New-RemoteRepository @remoteParams
                 }
                 'GitLab' {
                     if (-not $Token) { throw '-Token is required for GitLab remote creation.' }
                     $remoteParams = @{
-                        Provider   = 'GitLab'
-                        Owner      = $devName
-                        Name       = $RepoName
-                        Token      = $Token
-                        IsPrivate  = $Private.IsPresent
+                        Provider  = 'GitLab'
+                        Owner     = $devName
+                        Name      = $RepoName
+                        Token     = $Token
+                        IsPrivate = $Private.IsPresent
                     }
-                    if ($ApiBaseUrl) { $remoteParams['ApiBaseUrl'] = $ApiBaseUrl }
+                    if ($ApiBaseUrl) {
+                        $remoteParams['ApiBaseUrl'] = $ApiBaseUrl
+                        Write-GitMeLog -Level Debug -Message "GitLab ApiBaseUrl override: '$ApiBaseUrl'"
+                    }
                     $remoteInfo = New-RemoteRepository @remoteParams
                 }
                 'Local' {
@@ -188,13 +240,20 @@ Examples:
                         RemotePath = $RemotePath
                         RepoName   = $RepoName
                     }
+                    Write-GitMeLog -Level Debug -Message "Local bare repository path: '$RemotePath'"
                     $remoteInfo = New-LocalRepository @localParams
                 }
             }
+
+            Write-GitMeLog -Level Debug -Message "Remote info — CloneUrl='$($remoteInfo.CloneUrl)' Provider='$($remoteInfo.Provider)'"
+        }
+        else {
+            Write-GitMeLog -Level Debug -Message "No remote creation requested — skipping API call."
         }
 
         # Push or display manual instructions
         if ($remoteInfo) {
+            Write-GitMeLog -Level Debug -Message "Pushing to remote '$($remoteInfo.CloneUrl)'"
             Add-GitMeRemote -RemoteUrl $remoteInfo.CloneUrl -PackVersion $PackVersion
             Write-GitMeLog -Level Success -Message '=== Repository is live ==='
         }
@@ -207,11 +266,13 @@ Examples:
                 RemoteUrl   = $RemotePath
             }
             Show-GitMeInstruction @instructionParams
-
             Write-GitMeLog -Level Success -Message '=== Local initialization complete ==='
         }
+
+        Write-GitMeLog -Level Debug -Message "Invoke-Gitme completed successfully."
     }
     finally {
         Pop-Location
+        Write-GitMeLog -Level Debug -Message "Working directory restored."
     }
 }

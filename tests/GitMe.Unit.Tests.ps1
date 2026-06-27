@@ -301,48 +301,97 @@ Describe "New-GitMeInitialCommit" {
         Mock Write-GitMeLog {}
     }
 
-    It "Should throw when git add fails" {
-        Mock Invoke-GitMeNative {
-            return New-Object PSObject -Property @{ Output = ''; ExitCode = 1 }
-        } -ParameterFilter { $Arguments -contains 'add' }
+    It "Should throw when the working directory is empty" {
+        $tempDir = Join-Path $env:TEMP ("GitMeEmptyDir_" + [IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $tempDir -Force
+        Push-Location $tempDir
+        try {
+            { New-GitMeInitialCommit -RepoName 'Test' -PackVersion '1.0.0' `
+                    -DevName 'dev' -DevEmail 'dev@t.com' } |
+                Should -Throw '*is empty*'
+        }
+        finally {
+            Pop-Location
+            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 
-        { New-GitMeInitialCommit -RepoName 'Test' -PackVersion '1.0.0' `
-                -DevName 'dev' -DevEmail 'dev@t.com' } |
-            Should -Throw '*git add failed*'
+    It "Should throw when git add fails" {
+        $tempDir = Join-Path $env:TEMP ("GitMeAddFail_" + [IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $tempDir -Force
+        # Place a file so the empty-directory guard does not trigger
+        Set-Content -Path (Join-Path $tempDir 'dummy.txt') -Value 'x'
+        Push-Location $tempDir
+        try {
+            Mock Invoke-GitMeNative {
+                return New-Object PSObject -Property @{
+                    Output   = 'fatal: not a git repository'
+                    ExitCode = 128
+                }
+            } -ParameterFilter { $Arguments -contains 'add' }
+
+            { New-GitMeInitialCommit -RepoName 'Test' -PackVersion '1.0.0' `
+                    -DevName 'dev' -DevEmail 'dev@t.com' } |
+                Should -Throw '*git add failed*'
+        }
+        finally {
+            Pop-Location
+            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It "Should use DevName alone as author when DevEmail is empty" {
-        Mock Invoke-GitMeNative {
-            return New-Object PSObject -Property @{ Output = ''; ExitCode = 0 }
-        } -ParameterFilter { $Arguments -contains 'add' }
+        $tempDir = Join-Path $env:TEMP ("GitMeAuthor_" + [IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $tempDir -Force
+        Set-Content -Path (Join-Path $tempDir 'dummy.txt') -Value 'x'
+        Push-Location $tempDir
+        try {
+            Mock Invoke-GitMeNative {
+                return New-Object PSObject -Property @{ Output = ''; ExitCode = 0 }
+            } -ParameterFilter { $Arguments -contains 'add' }
 
-        Mock Invoke-GitMeNative {
-            $script:capturedCommitArgs = $Arguments
-            return New-Object PSObject -Property @{ Output = ''; ExitCode = 0 }
-        } -ParameterFilter { $Arguments -contains 'commit' }
+            Mock Invoke-GitMeNative {
+                $script:capturedCommitArgs = $Arguments
+                return New-Object PSObject -Property @{ Output = ''; ExitCode = 0 }
+            } -ParameterFilter { $Arguments -contains 'commit' }
 
-        New-GitMeInitialCommit -RepoName 'Test' -PackVersion '1.0.0' `
-            -DevName 'JustName' -DevEmail ''
-        ($script:capturedCommitArgs -join ' ') | Should -Match 'JustName'
+            New-GitMeInitialCommit -RepoName 'Test' -PackVersion '1.0.0' `
+                -DevName 'JustName' -DevEmail ''
+            ($script:capturedCommitArgs -join ' ') | Should -Match 'JustName'
+        }
+        finally {
+            Pop-Location
+            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It "Should emit WARN when commit returns non-zero exit code" {
-        Mock Invoke-GitMeNative {
-            return New-Object PSObject -Property @{ Output = ''; ExitCode = 0 }
-        } -ParameterFilter { $Arguments -contains 'add' }
+        $tempDir = Join-Path $env:TEMP ("GitMeCommitWarn_" + [IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $tempDir -Force
+        Set-Content -Path (Join-Path $tempDir 'dummy.txt') -Value 'x'
+        Push-Location $tempDir
+        try {
+            Mock Invoke-GitMeNative {
+                return New-Object PSObject -Property @{ Output = ''; ExitCode = 0 }
+            } -ParameterFilter { $Arguments -contains 'add' }
 
-        Mock Invoke-GitMeNative {
-            return New-Object PSObject -Property @{ Output = ''; ExitCode = 1 }
-        } -ParameterFilter { $Arguments -contains 'commit' }
+            Mock Invoke-GitMeNative {
+                return New-Object PSObject -Property @{ Output = ''; ExitCode = 1 }
+            } -ParameterFilter { $Arguments -contains 'commit' }
 
-        $warnMessages = New-Object 'System.Collections.Generic.List[string]'
-        Mock Write-GitMeLog {
-            if ($Level -eq 'Warn') { $warnMessages.Add($Message) }
+            $warnMessages = New-Object 'System.Collections.Generic.List[string]'
+            Mock Write-GitMeLog {
+                if ($Level -eq 'Warn') { $warnMessages.Add($Message) }
+            }
+
+            New-GitMeInitialCommit -RepoName 'Test' -PackVersion '1.0.0' `
+                -DevName 'dev' -DevEmail 'dev@t.com'
+            ($warnMessages -join ' ') | Should -Match 'Nothing to commit|commit failed'
         }
-
-        New-GitMeInitialCommit -RepoName 'Test' -PackVersion '1.0.0' `
-            -DevName 'dev' -DevEmail 'dev@t.com'
-        ($warnMessages -join ' ') | Should -Match 'Nothing to commit|commit failed'
+        finally {
+            Pop-Location
+            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
